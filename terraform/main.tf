@@ -78,7 +78,7 @@ resource "azurerm_service_plan" "appservice-plan" {
 }
 
 resource "azurerm_linux_web_app" "appsrv-prodcatalog" {
-  name                = "sshsappsrvcat01"
+  name                = "ogionsshsappsrvcat01"
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   service_plan_id     = azurerm_service_plan.appservice-plan.id
