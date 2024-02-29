@@ -1,0 +1,132 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  ASPNETCORE_ENVIRONMENT: Production
+  PROJECT_PRODUCT_CATALOG: src/ProductCatalog/ProductCatalog.csproj
+  REGISTRY_NAME: "sshsconrgs01.azurecr.io"
+  DB_CONNECTION_STRING: Host=${{ secrets.DB_HOST }}.postgres.database.azure.com;Port=${{ secrets.DB_PORT }};Username=${{ secrets.DB_ADMIN_USERNAME }}@${{ secrets.DB_HOST }};Password=${{ secrets.DB_ADMIN_PASSWORD }};Database=${{ secrets.DB_NAME }};
+
+jobs:
+  path-filters:
+    runs-on: ubuntu-latest
+    outputs:
+      terraformPath: ${{ steps.filter.outputs.terraform }}
+      productCatPath: ${{ steps.filter.outputs.prodcat }}
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            terraform:
+              - 'terraform/**'
+            prodcat:
+              - 'src/ProductCatalog/**'
+
+      - name: terraform tests
+        if: steps.filter.outputs.terraform == 'true'
+        run: echo "Terraform path is triggered"
+
+      - name: prod cat tests
+        if: steps.filter.outputs.prodcat == 'true'
+        run: echo "ProductCatalog path is triggered"
+
+  infrastructure:
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_AD_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_AD_CLIENT_SECRET}}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+    runs-on: ubuntu-latest
+    needs: path-filters
+    if: needs.path-filters.outputs.terraformPath == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1.4.0
+
+      - name: Terraform Format
+        id: fmt
+        working-directory: "./terraform"
+        run: terraform fmt -check
+
+      - name: Terraform Init
+        id: init
+        working-directory: "./terraform"
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: "./terraform"
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        env:
+          TF_VAR_docker_registry_url: ${{ env.REGISTRY_NAME }}
+          TF_VAR_docker_registry_username: ${{ secrets.AZURE_AD_CLIENT_ID }}
+          TF_VAR_docker_registry_password: ${{ secrets.AZURE_AD_PASSWORD }}
+          TF_VAR_db_admin_username: ${{ secrets.DB_ADMIN_USERNAME }}
+          TF_VAR_db_admin_password: ${{ secrets.DB_ADMIN_PASSWORD }}
+          TF_VAR_db_connection_string: ${{ env.DB_CONNECTION_STRING }}
+        working-directory: "./terraform"
+        run: terraform plan
+        continue-on-error: true
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Apply
+        id: apply
+        env:
+          TF_VAR_docker_registry_url: ${{ env.REGISTRY_NAME }}
+          TF_VAR_docker_registry_username: ${{ secrets.AZURE_AD_CLIENT_ID }}
+          TF_VAR_docker_registry_password: ${{ secrets.AZURE_AD_PASSWORD }}
+          TF_VAR_db_admin_username: ${{ secrets.DB_ADMIN_USERNAME }}
+          TF_VAR_db_admin_password: ${{ secrets.DB_ADMIN_PASSWORD }}
+          TF_VAR_db_connection_string: ${{ env.DB_CONNECTION_STRING }}
+        working-directory: "./terraform"
+        run: terraform apply -auto-approve
+
+  prodcat:
+    runs-on: ubuntu-latest
+    needs: infrastructure
+    if: needs.path-filters.outputs.productCatPath == 'true'
+    steps:
+      - name: "Checkout GitHub Action"
+        uses: actions/checkout@main
+
+      - name: "Az CLI login"
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: "Login into Azure Container Registry"
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ env.REGISTRY_NAME }}
+          username: ${{ secrets.AZURE_AD_CLIENT_ID }}
+          password: ${{ secrets.AZURE_AD_PASSWORD }}
+
+      - name: "Pushing docker image to ACR"
+        run: |
+          docker build -t ${{ env.REGISTRY_NAME }}/productcatalog:${{ github.sha }} -f src/ProductCatalog/Docker/Dockerfile src/ProductCatalog
+          docker push ${{ env.REGISTRY_NAME }}/productcatalog:${{ github.sha }}
+
+      - name: "Push image to web app"
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: "sshsappsrvcat01"
+          images: "${{ env.REGISTRY_NAME }}/productcatalog:${{ github.sha }}"
+
+      - name: Azure logout
+        run: |
+          az logout

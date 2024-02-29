@@ -1,0 +1,28 @@
+ARTICLE -> https://www.infoq.com/articles/cloud-native-development-azure/
+
+// DOCKER 
+// launch Postgres docker image for Product API database.
+>> docker run -p 127.0.0.1:5432:5432/tcp --name postgres -e POSTGRES_DB=product_catalog -e POSTGRES_USER=sqladmin -e POSTGRES_PASSWORD=Password1! -d postgres
+
+>> docker build -t productcatalog -f Dockerfile .
+>> docker run --name productcatalogapp -p 8080:80 -it productcatalog -e ConnectionStrings:ProductCatalogDbPgSqlConnection="Host=localhost;Port=5432;Username=sqladmin;Password=Password1!;Database=product_catalog;Include Error Detail=true"
+>> docker run --name productcatalogapp -p 8000:8080 -it productcatalog -e UseOnlyInMemoryDatabase="true"
+
+// EF
+>> dotnet tool install --global dotnet-ef
+>> dotnet-ef migrations add "InitialMigration"
+
+// AZURE
+>> az group create --location eastus --name sshsstates
+>> az storage account create \
+  --name sshsstg01 \
+  --access-tier Hot \
+  --kind StorageV2
+  --sku Standard_LRS
+  --location eastus
+  --resource-group sshsstates
+>> az storage container create \
+  --name sshsstatedevops01
+  --account-name sshsstg01
+  --resource-group sshsstates
+
